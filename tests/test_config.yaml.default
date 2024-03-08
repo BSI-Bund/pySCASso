@@ -1,0 +1,23 @@
+env:
+  OPEN5GS_PATH: /home/<user>/Workspace/open5gs
+  UERANSIM_PATH: /home/<user>/Workspace/UERANSIM
+  FREE5GC_PATH: /home/<user>/Workspace/free5gc
+
+fallback:
+  core: Dummy
+  ran: Dummy
+  ue: Dummy
+
+test_33514_g40_TC_AUTH_STATUS_STORE_UDM:
+  core: Free5GCCore
+  ran: UeransimGnodeBfree5gc
+  ue: UeransimUEfree5gc
+
+test_33515_g40_TC_UP_POLICY_PRECEDENCE_SMF:
+  core: Open5gsCore
+  ran: UeransimGnodeBopen5gs
+  ue: UeransimUEopen5gs
+
+test_33518_g20_TC_DISC_AUTHORIZATION_SLICE_NRF:
+  #core: Open5gsNRF
+  core: Free5GCCoreNRF

@@ -1,0 +1,13 @@
+pycrate>=0.7.0
+pyshark>=0.6
+pytest>=7.2.2
+allure-pytest>=2.13.2
+PyYAML>=6.0.1
+pycurl>=7.45.2
+scapy>=2.5.0
+ruamel.yaml>=0.18.5
+pymongo>=4.6.1
+pexpect>=4.9.0
+keyring>=24.3.0
+paramiko>=3.3.1
+sshtunnel>=0.4.0

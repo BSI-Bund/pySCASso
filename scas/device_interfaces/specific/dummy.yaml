@@ -1,0 +1,3 @@
+amf:
+  security:
+    integrity_order: [NIA2, NIA3, NIA1, NIA0]
