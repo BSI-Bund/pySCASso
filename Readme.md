@@ -182,6 +182,7 @@ fallback:
 
 This framework includes the (incomplete) device drivers/interfaces for two common open source core implementations, Open5GS and free5GC.
 Furthermore a device implementation for simulating the RAN and UE via UERANSIM can be used.
+For some test cases a patched version of UERANSIM is needed in order to perform a synchronization failure. A patch file (`ueransim_sync_fail.patch`) for UERANSIM can be found under `tools`.
 At the current state the drivers expect all those "devices" to be build from source, with the usual default config files applied and the executables and config files to be accessible via file system in the default locations of the build procedure. The device drivers do not work with a VM, container or network deployment or deployment as services (e.g. when installing via Package Managers), but could easily be adapted to do so.
 
 Please make sure you add the default subscribers to Open5GS and/or free5GC or configure the core, RAN and UE configs to work properly together. A sanity check would be to manually boot up core, RAN and one UE and check if the UE registers and gets a PDU session.

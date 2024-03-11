@@ -1,0 +1,354 @@
+diff '--color=auto' -ruN UERANSIM/src/lib/app/cli_cmd.cpp Workspace/ueransim/src/lib/app/cli_cmd.cpp
+--- UERANSIM/src/lib/app/cli_cmd.cpp	2024-03-11 17:24:22.588373917 +0100
++++ Workspace/ueransim/src/lib/app/cli_cmd.cpp	2024-03-11 17:26:09.829208815 +0100
+@@ -165,6 +165,8 @@
+     {"ps-list", {"List all PDU sessions", "", DefaultDesc, false}},
+     {"ps-release", {"Trigger a PDU session release procedure", "<pdu-session-id>...", DefaultDesc, true}},
+     {"ps-release-all", {"Trigger PDU session release procedures for all active sessions", "", DefaultDesc, false}},
++    {"force_sync_fail_once", {"Forces the UE to send an sync failure while the next registration", "", DefaultDesc, false}},
++    {"auth_fail_sync_fail", {"Sends unsolicited authentication failure message with cause synchronisation failure", "", DefaultDesc, false}},
+     {"deregister",
+      {"Perform a de-registration by the UE", "<normal|disable-5g|switch-off|remove-sim>", DefaultDesc, true}},
+ };
+@@ -277,6 +279,14 @@
+         }
+         return cmd;
+     }
++    else if (subCmd == "auth_fail_sync_fail")
++    {
++        return std::make_unique<UeCliCommand>(UeCliCommand::SEND_AUTH_FAIL_SYNC_FAIL);
++    }
++    else if (subCmd == "force_sync_fail_once")
++    {
++        return std::make_unique<UeCliCommand>(UeCliCommand::FORCE_SYNC_FAIL_ONCE);
++    }
+     else if (subCmd == "ps-release-all")
+     {
+         return std::make_unique<UeCliCommand>(UeCliCommand::PS_RELEASE_ALL);
+diff '--color=auto' -ruN UERANSIM/src/lib/app/cli_cmd.hpp Workspace/ueransim/src/lib/app/cli_cmd.hpp
+--- UERANSIM/src/lib/app/cli_cmd.hpp	2024-03-11 17:24:22.588373917 +0100
++++ Workspace/ueransim/src/lib/app/cli_cmd.hpp	2024-03-11 17:26:09.829208815 +0100
+@@ -54,6 +54,8 @@
+         PS_RELEASE_ALL,
+         PS_LIST,
+         DE_REGISTER,
++        FORCE_SYNC_FAIL_ONCE,
++        SEND_AUTH_FAIL_SYNC_FAIL,
+         RLS_STATE,
+         COVERAGE,
+     } present;
+diff '--color=auto' -ruN UERANSIM/src/lib/rlc/rlc.hpp Workspace/ueransim/src/lib/rlc/rlc.hpp
+--- UERANSIM/src/lib/rlc/rlc.hpp	2024-03-11 17:24:22.588373917 +0100
++++ Workspace/ueransim/src/lib/rlc/rlc.hpp	2024-03-11 17:26:09.832542174 +0100
+@@ -8,6 +8,7 @@
+ 
+ #pragma once
+ 
++#include <string>
+ #include <cstdint>
+ #include <cstdlib>
+ 
+diff '--color=auto' -ruN UERANSIM/src/lib/sctp/server.hpp Workspace/ueransim/src/lib/sctp/server.hpp
+--- UERANSIM/src/lib/sctp/server.hpp	2024-03-11 17:24:22.591707278 +0100
++++ Workspace/ueransim/src/lib/sctp/server.hpp	2024-03-11 17:26:09.832542174 +0100
+@@ -8,6 +8,7 @@
+ 
+ #pragma once
+ 
++#include <stdint.h>
+ #include <string>
+ #include <cstdint>
+ 
+diff '--color=auto' -ruN UERANSIM/src/ue/app/cmd_handler.cpp Workspace/ueransim/src/ue/app/cmd_handler.cpp
+--- UERANSIM/src/ue/app/cmd_handler.cpp	2024-03-11 17:24:22.591707278 +0100
++++ Workspace/ueransim/src/ue/app/cmd_handler.cpp	2024-03-11 17:26:09.832542174 +0100
+@@ -10,6 +10,11 @@
+ 
+ #include <ue/app/task.hpp>
+ #include <ue/nas/task.hpp>
++#include <ue/nas/keys.hpp>
++
++#include <ue/nas/mm/mm.hpp>
++#include <lib/nas/utils.hpp>
++
+ #include <ue/rls/task.hpp>
+ #include <ue/rrc/task.hpp>
+ #include <ue/tun/task.hpp>
+@@ -131,6 +136,7 @@
+             {"stored-suci", ToJson(m_base->nasTask->mm->m_storage->storedSuci->get())},
+             {"stored-guti", ToJson(m_base->nasTask->mm->m_storage->storedGuti->get())},
+             {"has-emergency", ::ToJson(m_base->nasTask->mm->hasEmergency())},
++            {"will-sync-fail-once", m_base->config->forceSyncFailureOnce},
+         });
+         sendResult(msg.address, json.dumpYaml());
+         break;
+@@ -173,6 +179,36 @@
+             sendResult(msg.address, "De-registration procedure triggered. UE device will be switched off.");
+         break;
+     }
++    case app::UeCliCommand::FORCE_SYNC_FAIL_ONCE: {
++        m_base->config->forceSyncFailureOnce = true;
++        sendResult(msg.address, "The next registration/authentication procedure will trigger a Sync Failure");
++        break;
++    }
++    case app::UeCliCommand::SEND_AUTH_FAIL_SYNC_FAIL: {
++        auto nas = m_base->nasTask;
++        nas->timers.t3520.start();
++
++        auto rand = OctetString().FromHex("47b9600ef9e3d55807dd2639d93df8a9");
++        auto milenage = nas->mm->calculateMilenage(nas->mm->m_usim->m_sqnMng->getSqn(), rand, true);
++        auto auts = keys::CalculateAuts(nas->mm->m_usim->m_sqnMng->getSqn(), milenage.ak_r, milenage.mac_s);
++
++        // Clear RAND and RES* stored in volatile memory
++        nas->mm->m_usim->m_rand = {};
++        nas->mm->m_usim->m_resStar = {};
++
++        // Stop T3516 if running
++        nas->mm->m_timers->t3516.stop();
++
++        nas::AuthenticationFailure resp{};
++        resp.mmCause.value = nas::EMmCause::SYNCH_FAILURE;
++        
++        resp.authenticationFailureParameter = nas::IEAuthenticationFailureParameter{};
++        resp.authenticationFailureParameter->rawData = std::move(auts);
++
++        nas->mm->sendNasMessage(resp);
++        sendResult(msg.address, "Sent unsolicited Authentication Failure message with cause: Synchronization Failure");
++        break;
++    }
+     case app::UeCliCommand::PS_RELEASE: {
+         for (int i = 0; i < msg.cmd->psCount; i++)
+             m_base->nasTask->sm->sendReleaseRequest(static_cast<int>(msg.cmd->psIds[i]) % 16);
+diff '--color=auto' -ruN UERANSIM/src/ue/nas/mm/auth.cpp Workspace/ueransim/src/ue/nas/mm/auth.cpp
+--- UERANSIM/src/ue/nas/mm/auth.cpp	2024-03-11 17:24:22.591707278 +0100
++++ Workspace/ueransim/src/ue/nas/mm/auth.cpp	2024-03-11 17:26:09.832542174 +0100
+@@ -348,7 +348,7 @@
+         m_timers->t3516.start();
+     }
+ 
+-    if (autnCheck == EAutnValidationRes::OK)
++    if (autnCheck == EAutnValidationRes::OK && no_failure)
+     {
+         // Calculate milenage
+         auto milenage = calculateMilenage(m_usim->m_sqnMng->getSqn(), rand, false);
+@@ -386,16 +386,19 @@
+         m_timers->t3520.start();
+         sendFailure(nas::EMmCause::MAC_FAILURE);
+     }
+-    else if (autnCheck == EAutnValidationRes::SYNCHRONISATION_FAILURE)
++    else if (autnCheck == EAutnValidationRes::SYNCHRONISATION_FAILURE || !no_failure)
+     {
+-        if (networkFailingTheAuthCheck(true))
++        if (networkFailingTheAuthCheck(true)){
++            no_failure = true;
+             return;
++        }
+ 
+         m_timers->t3520.start();
+ 
+         auto milenage = calculateMilenage(m_usim->m_sqnMng->getSqn(), rand, true);
+         auto auts = keys::CalculateAuts(m_usim->m_sqnMng->getSqn(), milenage.ak_r, milenage.mac_s);
+         sendFailure(nas::EMmCause::SYNCH_FAILURE, std::move(auts));
++        no_failure = true;
+     }
+     else // the other case, separation bit mismatched
+     {
+@@ -488,6 +491,12 @@
+     auto milenage = calculateMilenage(m_usim->m_sqnMng->getSqn(), rand, false);
+     OctetString receivedSQN = OctetString::Xor(receivedSQNxorAK, milenage.ak);
+ 
++    // Force sync failure if requested
++    if (m_base->config->forceSyncFailureOnce) {
++        m_base->config->forceSyncFailureOnce = false;
++        return EAutnValidationRes::SYNCHRONISATION_FAILURE;
++    }
++
+     m_logger->debug("Received SQN [%s]", receivedSQN.toHexString().c_str());
+     m_logger->debug("SQN-MS [%s]", m_usim->m_sqnMng->getSqn().toHexString().c_str());
+ 
+diff '--color=auto' -ruN UERANSIM/src/ue/nas/mm/mm.hpp Workspace/ueransim/src/ue/nas/mm/mm.hpp
+--- UERANSIM/src/ue/nas/mm/mm.hpp	2024-03-11 17:24:22.591707278 +0100
++++ Workspace/ueransim/src/ue/nas/mm/mm.hpp	2024-03-11 17:26:09.832542174 +0100
+@@ -71,6 +71,8 @@
+     int64_t m_lastTimePlmnSearchFailureLogged{};
+     // Last time MM state changed
+     int64_t m_lastTimeMmStateChange{};
++    // Indicates if synch failure should occur
++    bool no_failure = true;
+ 
+     friend class UeCmdHandler;
+     friend class NasSm;
+@@ -206,4 +208,4 @@
+     void handleNasEvent(const NmUeNasToNas &msg);
+ };
+ 
+-} // namespace nr::ue
+\ No newline at end of file
++} // namespace nr::ue
+diff '--color=auto' -ruN UERANSIM/src/ue/nas/task.cpp Workspace/ueransim/src/ue/nas/task.cpp
+--- UERANSIM/src/ue/nas/task.cpp	2024-03-11 17:24:22.591707278 +0100
++++ Workspace/ueransim/src/ue/nas/task.cpp	2024-03-11 17:26:09.832542174 +0100
+@@ -26,6 +26,11 @@
+     usim = new Usim();
+ }
+ 
++void NasTask::setFailure()
++{
++    mm->no_failure = false;
++}
++
+ void NasTask::onStart()
+ {
+     usim->initialize(base->config->supi.has_value());
+@@ -172,4 +177,4 @@
+     sm->onTimerTick();
+ }
+ 
+-} // namespace nr::ue
+\ No newline at end of file
++} // namespace nr::ue
+diff '--color=auto' -ruN UERANSIM/src/ue/nas/task.hpp Workspace/ueransim/src/ue/nas/task.hpp
+--- UERANSIM/src/ue/nas/task.hpp	2024-03-11 17:24:22.591707278 +0100
++++ Workspace/ueransim/src/ue/nas/task.hpp	2024-03-11 17:26:09.832542174 +0100
+@@ -37,6 +37,9 @@
+     explicit NasTask(TaskBase *base);
+     ~NasTask() override = default;
+ 
++  public:
++    void setFailure();
++
+   protected:
+     void onStart() override;
+     void onLoop() override;
+@@ -46,4 +49,4 @@
+     void performTick();
+ };
+ 
+-} // namespace nr::ue
+\ No newline at end of file
++} // namespace nr::ue
+diff '--color=auto' -ruN UERANSIM/src/ue/types.hpp Workspace/ueransim/src/ue/types.hpp
+--- UERANSIM/src/ue/types.hpp	2024-03-11 17:24:22.591707278 +0100
++++ Workspace/ueransim/src/ue/types.hpp	2024-03-11 17:26:09.835875535 +0100
+@@ -132,6 +132,8 @@
+     bool configureRouting{};
+     bool prefixLogger{};
+ 
++    bool forceSyncFailureOnce{};
++
+     [[nodiscard]] std::string getNodeName() const
+     {
+         if (supi.has_value())
+diff '--color=auto' -ruN UERANSIM/src/ue/ue.cpp Workspace/ueransim/src/ue/ue.cpp
+--- UERANSIM/src/ue/ue.cpp	2024-03-11 17:24:22.591707278 +0100
++++ Workspace/ueransim/src/ue/ue.cpp	2024-03-11 17:26:09.835875535 +0100
+@@ -65,4 +65,9 @@
+     taskBase->appTask->push(std::make_unique<NmUeCliCommand>(std::move(cmd), address));
+ }
+ 
++void UserEquipment::setFailure()
++{
++     taskBase->nasTask->setFailure();
++}
++
+ } // namespace nr::ue
+diff '--color=auto' -ruN UERANSIM/src/ue/ue.hpp Workspace/ueransim/src/ue/ue.hpp
+--- UERANSIM/src/ue/ue.hpp	2024-03-11 17:24:22.591707278 +0100
++++ Workspace/ueransim/src/ue/ue.hpp	2024-03-11 17:26:09.835875535 +0100
+@@ -28,8 +28,9 @@
+     virtual ~UserEquipment();
+ 
+   public:
++    void setFailure();
+     void start();
+     void pushCommand(std::unique_ptr<app::UeCliCommand> cmd, const InetAddress &address);
+ };
+ 
+-} // namespace nr::ue
+\ No newline at end of file
++} // namespace nr::ue
+diff '--color=auto' -ruN UERANSIM/src/ue.cpp Workspace/ueransim/src/ue.cpp
+--- UERANSIM/src/ue.cpp	2024-03-11 17:24:22.591707278 +0100
++++ Workspace/ueransim/src/ue.cpp	2024-03-11 17:26:09.832542174 +0100
+@@ -36,6 +36,7 @@
+     std::string configFile{};
+     bool noRoutingConfigs{};
+     bool disableCmd{};
++    bool synchFailure{};
+     std::string imsi{};
+     int count{};
+     int tempo{};
+@@ -264,6 +265,8 @@
+                                       std::nullopt};
+     opt::OptionItem itemDisableRouting = {'r', "no-routing-config",
+                                           "Do not auto configure routing for UE TUN interface", std::nullopt};
++   opt::OptionItem itemSynchFailure = {'s', "synch-failure", 
++                                       "Sending a synchronisation failure for the fist authentication request", std::nullopt}; 
+ 
+     desc.items.push_back(itemConfigFile);
+     desc.items.push_back(itemImsi);
+@@ -271,6 +274,7 @@
+     desc.items.push_back(itemTempo);
+     desc.items.push_back(itemDisableCmd);
+     desc.items.push_back(itemDisableRouting);
++    desc.items.push_back(itemSynchFailure);
+ 
+     opt::OptionsResult opt{argc, argv, desc, false, nullptr};
+ 
+@@ -308,6 +312,7 @@
+     }
+ 
+     g_options.disableCmd = opt.hasFlag(itemDisableCmd);
++    g_options.synchFailure = opt.hasFlag(itemSynchFailure);
+ }
+ 
+ static std::string LargeSum(std::string a, std::string b)
+@@ -521,13 +526,24 @@
+     if (g_options.tempo != 0)
+     {
+         g_ueMap.invokeForeach([](const auto &ue) {
++            if (g_options.synchFailure)
++            {
++                ue.second->setFailure();
++            }
+             ue.second->start();
+             std::this_thread::sleep_for(std::chrono::milliseconds(g_options.tempo));
+         });
+     }
+     else
+     {
+-        g_ueMap.invokeForeach([](const auto &ue) { ue.second->start(); });
++        g_ueMap.invokeForeach([](const auto &ue) 
++        { 
++            if (g_options.synchFailure)
++                {
++                    ue.second->setFailure();
++                }
++            ue.second->start(); 
++        });
+     }
+ 
+     while (true)
+diff '--color=auto' -ruN UERANSIM/src/utils/logger.hpp Workspace/ueransim/src/utils/logger.hpp
+--- UERANSIM/src/utils/logger.hpp	2024-03-11 17:24:22.595040634 +0100
++++ Workspace/ueransim/src/utils/logger.hpp	2024-03-11 17:26:09.835875535 +0100
+@@ -13,7 +13,7 @@
+ #include <memory>
+ #include <string>
+ #include <vector>
+-
++#include <string>
+ #include <spdlog/fwd.h>
+ 
+ enum class Severity
+diff '--color=auto' -ruN UERANSIM/src/utils/nts.hpp Workspace/ueransim/src/utils/nts.hpp
+--- UERANSIM/src/utils/nts.hpp	2024-03-11 17:24:22.595040634 +0100
++++ Workspace/ueransim/src/utils/nts.hpp	2024-03-11 17:26:09.835875535 +0100
+@@ -19,6 +19,7 @@
+ #include <queue>
+ #include <thread>
+ #include <vector>
++#include <cstdio>
+ 
+ enum class NtsMessageType
+ {
