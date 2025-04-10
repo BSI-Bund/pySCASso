@@ -59,6 +59,8 @@ class PacketType():
         "frame": 0,
         "ip": 1,
         "tcp": 2,
+        "nr-rrc": 2,
+        "f1ap": 3,
         "ngap": 3,
         "http": 3,
         "http2": 3,
@@ -219,6 +221,10 @@ class PacketType():
             return display_filter
 
         for disp_filter in self.packet_filter:
+            # NOTE: filters for label-type fields do not have a value
+            if disp_filter.value == None or disp_filter.value == '':
+                display_filter += f' and {disp_filter.key}'
+                continue
             if isinstance(disp_filter.value, str):
                 if (disp_filter.value.isdigit() or
                         is_valid_ip_address(disp_filter.value) or
